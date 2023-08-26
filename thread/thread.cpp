@@ -1108,7 +1108,8 @@ R"(
     __attribute__((always_inline)) inline
     Switch prepare_usleep(uint64_t useconds, thread_list* waitq, RunQ rq = {})
     {
-        SCOPED_MEMBER_LOCK(waitq);
+        if (waitq)
+            SCOPED_MEMBER_LOCK(waitq);
         SCOPED_LOCK(rq.current->lock);
         assert(!AtomicRunQ(rq).single());
         auto sw = AtomicRunQ(rq).remove_current(states::SLEEPING);

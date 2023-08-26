@@ -23,6 +23,7 @@ limitations under the License.
 #include <photon/common/utility.h>
 #include <photon/common/PMF.h>
 
+static_assert(true);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstrict-aliasing"
 

@@ -325,8 +325,8 @@ public:
 
     bool push(const T& x) { return push_batch(&x, 1) == 1; }
 
-    size_t pop_batch(T* x, size_t n) {
-        size_t rt, wh;
+    size_t pop_batch(T* x, uint64_t n) {
+        uint64_t rt, wh;
         rt = read_tail.load(std::memory_order_relaxed);
         for (;;) {
             wh = write_head.load(std::memory_order_relaxed);
