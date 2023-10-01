@@ -48,9 +48,10 @@ namespace photon {
     template<typename FUNCTOR, typename...ARGUMENTS>
     struct FunctorWrapper {
         typename std::decay<FUNCTOR>::type _obj;
-        __attribute__((always_inline))
-        void operator()(ARGUMENTS&&...args) {
-            _obj(std::forward<ARGUMENTS>(args)...);
+        // __attribute__((always_inline))
+        int operator()(ARGUMENTS&...args) {
+            _obj(std::move(args)...);
+            return 0;
         }
     };
 

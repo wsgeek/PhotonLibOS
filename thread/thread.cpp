@@ -14,8 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+#define protected public
+#include <photon/thread/thread.h>
+#include <photon/thread/timer.h>
+#include "list.h"
+#undef protected
+
 #include <memory.h>
-#include <sys/mman.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include <cstddef>
@@ -27,11 +32,19 @@ limitations under the License.
 #include <mutex>
 #include <condition_variable>
 
-#define protected public
-#include "thread.h"
-#include "timer.h"
-#include "list.h"
-#undef protected
+#ifdef _WIN64
+#include <processthreadsapi.h>
+#include <stdlib.h>
+inline int posix_memalign(void** memptr, size_t alignment, size_t size) {
+    auto ok = malloc(size);
+    if (!ok)
+        return ENOMEM;
+    *memptr = ok;
+    return 0;
+}
+#else
+#include <sys/mman.h>
+#endif
 
 #include <photon/io/fd-events.h>
 #include <photon/common/timeout.h>
@@ -64,6 +77,10 @@ limitations under the License.
 // Define assembly section header for clang and gcc
 #if defined(__APPLE__)
 #define DEF_ASM_FUNC(name) ".text\n" \
+                           #name": "
+#elif defined(_WIN64)
+#define DEF_ASM_FUNC(name) ".text\n .p2align 4\n" \
+                           ".def "#name"; .scl 3; .type 32; .endef\n" \
                            #name": "
 #else
 #define DEF_ASM_FUNC(name) ".section .text."#name",\"axG\",@progbits,"#name",comdat\n" \
@@ -124,7 +141,7 @@ namespace photon
     }
 
     void default_photon_thread_stack_dealloc(void*, void* ptr, size_t size) {
-#ifndef __aarch64__
+#if !defined(_WIN64) && !defined(__aarch64__)
         madvise(ptr, size, MADV_DONTNEED);
 #endif
         free(ptr);
@@ -255,12 +272,19 @@ namespace photon
 #ifdef __APPLE__
             stack_size = pthread_get_stacksize_np(pthread_self());
             stackful_alloc_top = (char*) pthread_get_stackaddr_np(pthread_self());
-#else
+#elif defined(_WIN64)
+            ULONG_PTR stack_low, stack_high;
+            GetCurrentThreadStackLimits(&stack_low, &stack_high);
+            stackful_alloc_top = (char*)stack_low;
+            stack_size = stack_high - stack_low;
+#elif defined(__linux__)
             pthread_attr_t gattr;
             pthread_getattr_np(pthread_self(), &gattr);
             pthread_attr_getstack(&gattr,
                 (void**)&stackful_alloc_top, &stack_size);
             pthread_attr_destroy(&gattr);
+#else
+            static_assert(false, "unsupported platform");
 #endif
         }
 
@@ -622,6 +646,12 @@ namespace photon
         }
     };
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+    static_assert(offsetof(thread, arg)   == 0x40, "...");
+    static_assert(offsetof(thread, start) == 0x48, "...");
+#pragma GCC diagnostic pop
+
     inline void thread::dequeue_ready_atomic(states newstat)
     {
         assert("this is not in runq, and this->lock is locked");
@@ -649,7 +679,7 @@ namespace photon
     static void _photon_thread_die(thread* th) asm("_photon_thread_die");
 
 #if defined(__x86_64__)
-
+#if !defined(_WIN64)
     asm(
 DEF_ASM_FUNC(_photon_switch_context) // (void** rdi_to, void** rsi_from)
 R"(
@@ -684,12 +714,6 @@ R"(
 )"
     );
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Winvalid-offsetof"
-    static_assert(offsetof(thread, arg)   == 0x40, "...");
-    static_assert(offsetof(thread, start) == 0x48, "...");
-#pragma GCC diagnostic pop
-
     inline void switch_context(thread* from, thread* to) {
         prepare_switch(from, to);
         auto _t_ = to->stack.pointer_ref();
@@ -717,6 +741,73 @@ R"(
             : "rax", "rbx", "r8", "r9", "r10", "r11", "r12", "r13", "r14",
               "r15");
     }
+#else // _WIN64
+    asm(
+DEF_ASM_FUNC(_photon_switch_context) // (void** rcx_to, void** rdx_from)
+R"(
+        push    %rbp
+        mov     %rsp, (%rdx)
+        mov     (%rcx), %rsp
+        pop     %rbp
+        ret
+)"
+
+DEF_ASM_FUNC(_photon_switch_context_defer) // (void* rcx_arg, void (*rdx_defer)(void*), void** r8_to, void** r9_from)
+R"(
+        push    %rbp
+        mov     %rsp, (%r9)
+)"
+
+DEF_ASM_FUNC(_photon_switch_context_defer_die) // (void* rcx_arg, void (*rdx_defer)(void*), void** r8_to)
+R"(
+        mov     (%r8), %rsp
+        pop     %rbp
+        jmp     *%rdx
+)"
+
+DEF_ASM_FUNC(_photon_thread_stub)
+R"(
+        mov     0x40(%rbp), %rcx
+        movq    $0, 0x40(%rbp)
+        call    *0x48(%rbp)
+        mov     %rax, 0x48(%rbp)
+        mov     %rbp, %rcx
+        call    _photon_thread_die
+)"
+    );
+
+    inline void switch_context(thread* from, thread* to) {
+        prepare_switch(from, to);
+        auto _t_ = to->stack.pointer_ref();
+        register auto f asm("rdx") = from->stack.pointer_ref();
+        register auto t asm("rcx") = _t_;
+        asm volatile("call _photon_switch_context"  // (to, from)
+                     : "+r"(t), "+r"(f)
+                     :  // "0"(t), "1"(f)
+                     : "rax", "rbx", "rsi", "rdi", "r8", "r9",
+                       "r10", "r11", "r12", "r13", "r14", "r15",
+                       "xmm6",  "xmm7",  "xmm8",  "xmm9",  "xmm10",
+                       "xmm11", "xmm12", "xmm13", "xmm14", "xmm15");
+    }
+
+    inline void switch_context_defer(thread* from, thread* to,
+                                     void (*defer)(void*), void* arg) {
+        prepare_switch(from, to);
+        auto _t_ = to->stack.pointer_ref();
+        register auto f asm("r9") = from->stack.pointer_ref();
+        register auto t asm("r8") = _t_;
+        register auto a asm("rcx") = arg;
+        register auto d asm("rdx") = defer;
+        asm volatile(
+            "call _photon_switch_context_defer"  // (arg, defer, to, from)
+            : "+r"(t), "+r"(f), "+r"(a), "+r"(d)
+            :  // "0"(t), "1"(f), "2"(a), "3"(d)
+            : "rax", "rbx", "rsi", "rdi", "r10",
+              "r11", "r12", "r13", "r14", "r15",
+              "xmm6",  "xmm7",  "xmm8",  "xmm9",  "xmm10",
+              "xmm11", "xmm12", "xmm13", "xmm14", "xmm15");
+    }
+#endif // _WIN64
 
 #elif defined(__aarch64__) || defined(__arm64__)
 
@@ -1234,7 +1325,7 @@ R"(
     }
 
     static void do_stack_pages_gc(void* arg) {
-#ifndef __aarch64__
+#if !defined(_WIN64) && !defined(__aarch64__)
         auto th = (thread*)arg;
         assert(th->vcpu == CURRENT->vcpu);
         auto buf = th->buf;
@@ -1632,7 +1723,7 @@ R"(
         mark &= ~(RLOCK | WLOCK);
         mark |= mode;
         CURRENT->rwlock_mark = mark;
-        uint64_t op = (mode == RLOCK) ? (1UL << 63) : -1UL;
+        uint64_t op = (mode == RLOCK) ? (1ULL << 63) : -1ULL;
         if (cvar.q.th || (op & state)) {
             do {
                 int ret = cvar.wait(lock, timeout);
