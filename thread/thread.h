@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 #pragma once
-#include <cinttypes>
+#include <cinttypes> // IWYU pragma: keep
 #include <cassert>
 #include <cerrno>
 #include <atomic>

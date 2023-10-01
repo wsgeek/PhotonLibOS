@@ -27,7 +27,7 @@ limitations under the License.
 #include <cassert>
 #include <cerrno>
 #include <vector>
-#include <new>
+#include <new> // IWYU pragma: keep
 #include <thread>
 #include <mutex>
 #include <condition_variable>
