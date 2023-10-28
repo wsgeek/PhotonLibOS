@@ -55,7 +55,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g")
 set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -DNDEBUG -g")
-set(CMAKE_CXX_FLAGS_MINSIZEREL "-O3 -g")    # Only for CI test
+set(CMAKE_CXX_FLAGS_MINSIZEREL "-O2 -g")    # Only for CI test
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -306,9 +306,14 @@ target_link_libraries(photon_static
 
 # Merge static libs into libphoton.a
 # Do NOT use this target directly.
+if (NOT APPLE)
+    set(merge_command ar -crT libphoton.a)
+else ()
+    set(merge_command libtool -static -o libphoton.a)
+endif ()
 add_custom_target(_photon_static_archive ALL
         COMMAND rm -rf libphoton.a
-        COMMAND ar -crT libphoton.a $<TARGET_FILE:photon_static> $<TARGET_FILE:easy_weak> $<TARGET_FILE:fstack_weak>
+        COMMAND ${merge_command} $<TARGET_FILE:photon_static> $<TARGET_FILE:easy_weak> $<TARGET_FILE:fstack_weak>
         DEPENDS photon_static
         WORKING_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY}
         VERBATIM
